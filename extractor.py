@@ -155,12 +155,12 @@ def parse_args():
     )
     parser.add_argument(
         "-o", "--output",
-        help="Output Path",
+        help="output filename",
         type=Path
     )
     parser.add_argument(
         "-i", "--id",
-        help="Labels modules with their ID",
+        help="labels modules with their ID",
         action='store_true',
         default=False,
     )
