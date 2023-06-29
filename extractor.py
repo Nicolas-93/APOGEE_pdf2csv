@@ -1,8 +1,12 @@
+#!/bin/python3
+
 import re
+import argparse
 from tabula import read_pdf
 from functools import reduce, cached_property
 from decimal import Decimal
 from copy import deepcopy
+from pathlib import Path
 # from IPython.display import display
 import pandas
 
@@ -68,11 +72,11 @@ class RefactoredPDF:
     
     def concat_columns(self):
         merged = []
-        print(len(self.dfs))
+        # print(len(self.dfs))
         # Merge columns that were splitted accros sheets
         for first_page in range(0, self.sheet_count, self.split_count):
             splitted_pages = [self.dfs[i] for i in range(first_page, first_page+self.split_count, 1)]
-            print(f"{first_page=}")
+            # print(f"{first_page=}")
             merged.append(
                 reduce(
                     lambda df1, df2: pandas.concat(
@@ -136,7 +140,40 @@ class RefactoredPDF:
         modules = self.courses_ids if ue_id else self.courses_names
         self.dfs.columns = list(names)[:3] + modules[3:]
 
+    def get_dataframe(self):
+        return self.dfs
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        prog="APOGEE Extractor",
+        description="Extracts APOGEE data from PDF"
+    )
+    parser.add_argument(
+        "-f", "--file",
+        help="PDF file",
+        type=Path
+    )
+    parser.add_argument(
+        "-o", "--output",
+        help="Output Path",
+        type=Path
+    )
+    parser.add_argument(
+        "-i", "--id",
+        help="Labels modules with their ID",
+        action='store_true',
+        default=False,
+    )
+
+    return parser.parse_args()
 
 if __name__ == '__main__':
-    pv = RefactoredPDF("PV_FINAL.pdf")
+
+    args = parse_args()
+    pv = RefactoredPDF(args.file)
+    df = pv.get_dataframe()
     
+    if args.id:
+        pv.rename_header(ue_id=True)
+    
+    df.to_csv(args.output, index=False)
