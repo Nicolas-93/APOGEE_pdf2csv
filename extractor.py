@@ -43,7 +43,7 @@ class RefactoredPDF:
         return len(self.raw_dfs)
 
     """
-    Number of pages used by the pdf to represent one record
+    Number of pages used by the pdf to represent a record
     """
     @cached_property
     def split_count(self) -> int:
@@ -90,7 +90,7 @@ class RefactoredPDF:
     Concat pdf's pages of form [1A, 2B, 3C, 4A, 5B, 6C, ...]
     into [1A + 2B + 3C, 4A + 5B + 6C, ...], where '+' is a
     concatenation briging together each columns to create a single record.
-    Then assemble all lines to create a single dataframe.
+    Then assemble all dataframes into a single one.
     """
     def _concat_columns(self):
         merged = []
@@ -201,7 +201,7 @@ def parse_args():
         description="Extracts APOGEE data from PDF"
     )
     parser.add_argument(
-        "-f", "--file",
+        "filename",
         help="PDF file",
         type=Path
     )
@@ -222,7 +222,7 @@ def parse_args():
 if __name__ == '__main__':
 
     args = parse_args()
-    pv = RefactoredPDF(args.file)
+    pv = RefactoredPDF(args.filename)
     df = pv.get_dataframe()
     
     if args.id:
