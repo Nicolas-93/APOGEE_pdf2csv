@@ -7,52 +7,65 @@ from functools import reduce, cached_property
 from decimal import Decimal
 from copy import deepcopy
 from pathlib import Path
-# from IPython.display import display
+from itertools import zip_longest
 import pandas
 
 def list_diff(l1: list, l2: list) -> list[int]:
-    return [i for i, (e1, e2) in enumerate(zip(l1, l2)) if e1 != e2]
+    return [i for i, (e1, e2) in enumerate(zip_longest(l1, l2)) if e1 != e2]
 
 class RefactoredPDF:
     def __init__(self, filename: str):
         self.filename = filename
-        self.dfs = read_pdf(
-            filename,
+        self._read_pdf()
+        self._clean_pdf()
+
+    def _read_pdf(self):
+        self.raw_dfs = read_pdf(
+            self.filename,
             multiple_tables=True,
             lattice=True,
             pages="all",
             encoding='ISO-8859-1'
         )
-        self.split_count
-        self.check_lines_count()
-        self.refactor_columns_names()
-        self.concat_columns()
-        self.drop_stats_line()
-        self.split_resultats()
-        self.normalize()
-        self.courses_ids
-        self.courses_names
+        # self.split_count
+        self._check_lines_count()
+        self._refactor_columns_names()
+        self.df = self._concat_columns()
+
+    def _clean_pdf(self):
+        self._drop_stats_line()
+        self._split_resultats()
+        self._normalize()
         self.rename_header()
 
     @cached_property
     def sheet_count(self) -> int:
-        return len(self.dfs)
+        return len(self.raw_dfs)
 
+    """
+    Number of pages used by the pdf to represent one record
+    """
     @cached_property
     def split_count(self) -> int:
-        cols_len = [len(df.columns) for df in self.dfs]
+        cols_len = [len(df.columns) for df in self.raw_dfs]
         split_count = cols_len.index(min(cols_len)) + 1
-        diff = list_diff((self.sheet_count // split_count) * cols_len[:split_count], cols_len)
+        group_pattern = cols_len[:split_count]
+        # All splitted pages should have the same group pattern
+        diff = list_diff((self.sheet_count // split_count) * group_pattern, cols_len)
         
         if diff:
             raise ValueError(
-                f"Thoses pages doesn't have an inconsistant number of columns, "
-                f"compared to the first group : {diff}")
+                f"Thoses pages have an inconsistant number of columns "
+                f"compared to the first group ({group_pattern}) :\n {diff}")
 
         return split_count
 
-    def check_lines_count(self) -> bool:
-        lines_len = [len(d) for d in self.dfs]
+    """
+    Assert parsed pdf's lines have a coherent number of lines across
+    splitted pages
+    """
+    def _check_lines_count(self) -> bool:
+        lines_len = [len(d) for d in self.raw_dfs]
         for i in range(self.sheet_count, self.split_count):
             for length in lines_len[i:i+self.split_count]:
                 if length != lines_len[0]:
@@ -61,8 +74,11 @@ class RefactoredPDF:
                         f"{length}, expected {lines_len[0]}")
         return True
 
-    def refactor_columns_names(self):
-        for df in self.dfs:
+    """
+    Realign columns names, and rename student identifier columns.
+    """
+    def _refactor_columns_names(self):
+        for df in self.raw_dfs:
             cols = list(df.columns)
             cols.insert(1, '')
             cols.pop()
@@ -70,12 +86,21 @@ class RefactoredPDF:
             df.columns = cols
             df.drop('', axis=1, inplace=True)
     
-    def concat_columns(self):
+    """
+    Concat pdf's pages of form [1A, 2B, 3C, 4A, 5B, 6C, ...]
+    into [1A + 2B + 3C, 4A + 5B + 6C, ...], where '+' is a
+    concatenation briging together each columns to create a single record.
+    Then assemble all lines to create a single dataframe.
+    """
+    def _concat_columns(self):
         merged = []
-        # print(len(self.dfs))
+        # print(len(self.df))
         # Merge columns that were splitted accros sheets
         for first_page in range(0, self.sheet_count, self.split_count):
-            splitted_pages = [self.dfs[i] for i in range(first_page, first_page+self.split_count, 1)]
+            splitted_pages = [
+                self.raw_dfs[i]
+                for i in range(first_page, first_page + self.split_count, 1)
+            ]
             # print(f"{first_page=}")
             merged.append(
                 reduce(
@@ -87,16 +112,24 @@ class RefactoredPDF:
                 )
             )
         # Merges all lines into one dataframe
-        self.dfs = pandas.concat(merged, axis=0)
-        self.dfs.reset_index(drop=True, inplace=True)
+        df = pandas.concat(merged, axis=0)
+        df.reset_index(drop=True, inplace=True)
 
-    def drop_stats_line(self):
-        self.dfs.drop(self.dfs.tail(1).index, inplace=True)
+        return df
 
-    def split_resultats(self):
-        resultats = self.dfs[self.dfs.columns[1]]
+    """
+    Remove statistics.
+    """
+    def _drop_stats_line(self):
+        self.df.drop(self.df.tail(1).index, inplace=True)
+
+    """
+    Split "Résultat" column in two column "Résultat" and "Admission" 
+    """
+    def _split_resultats(self):
+        resultats = self.df[self.df.columns[1]]
         
-        # Split 'results' column that contains 'admission' status 
+        # Split 'Résultat' column that contains 'admission' status 
         resultats = resultats.str.split('\r', expand=True).iloc[:, :2]
         
         # Force two columns if only one was found
@@ -104,48 +137,67 @@ class RefactoredPDF:
         resultats = resultats.reindex(labels=indexes, axis=1, fill_value=float('NaN'))
         
         resultats.columns = ["Résultat", "Admission"]
-        self.dfs = pandas.concat([self.dfs.iloc[:, 0:1], resultats, self.dfs.iloc[:, 2:]], axis=1)
+        self.df = pandas.concat(
+            [self.df.iloc[:, 0:1], resultats, self.df.iloc[:, 2:]], axis=1
+        )
 
-    def normalize(self):
+    """
+    Refactor cells to only contains cells's numbers. 
+    """
+    def _normalize(self):
         def extract_number(cell: str):
             if match := re.search('(\\d*\\.?\\d+)', str(cell)):
                 return Decimal(match.group())
             return Decimal("NaN")
 
-        left  = self.dfs.iloc[:, 0:2].applymap(extract_number)
-        right = self.dfs.iloc[:, 3: ].applymap(extract_number)
+        left  = self.df.iloc[:, 0:2].applymap(extract_number)
+        right = self.df.iloc[:, 3: ].applymap(extract_number)
 
-        self.dfs = self.dfs.assign(**left).assign(**right)
+        self.df = self.df.assign(**left).assign(**right)
 
     """
     Extract all UE codes from header
     """
     @cached_property
     def courses_ids(self):
-        return [re.search("^([A-Z]|\\d){7}|$", field).group() for field in self.dfs.columns]
+        return [
+            re.search("^([A-Z]|\\d){7}|$", field).group()
+            for field in self.df.columns
+        ]
 
     """
     Extract all UE names from header
     """
     @cached_property
     def courses_names(self):
-        courses_names = [re.search(r'\r(.+)\r|$', field).group() for field in self.dfs.columns]
-        return [re.sub(r'(?<=[A-Z])\r(?=[A-Z])|$', '', field).replace('\r', ' ').strip() for field in courses_names]
+        courses_names = [
+            re.search(r'\r(.+)\r|$', field).group()
+            for field in self.df.columns
+        ]
+        return [
+            re.sub(
+                r'(?<=[A-Z])\r(?=[A-Z])|$',
+                '',
+                field)
+            .replace('\r', ' ')
+            .strip()
+            for field in courses_names
+        ]
 
     """
     Rename UEs labels in header
     """
     def rename_header(self, ue_id=False):
-        names = self.dfs.columns
+        names = self.df.columns
         modules = self.courses_ids if ue_id else self.courses_names
-        self.dfs.columns = list(names)[:3] + modules[3:]
+        self.df.columns = list(names)[:3] + modules[3:]
 
     def get_dataframe(self):
-        return self.dfs
+        return self.df
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        prog="APOGEE Extractor",
+        prog="APOGEE PDF to CSV",
         description="Extracts APOGEE data from PDF"
     )
     parser.add_argument(
